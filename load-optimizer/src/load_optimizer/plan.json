@@ -1,0 +1,44 @@
+{
+  "container": {
+    "height": 2.698,
+    "length": 12.032,
+    "max_weight": 26500.0,
+    "width": 2.352
+  },
+  "mixed_allocations": [
+    {
+      "allocated_qty": 600,
+      "limiting_factor": "request",
+      "sku": "A",
+      "unit_volume": 0.06,
+      "unit_weight": 18.0
+    }
+  ],
+  "single_sku_capacity": [
+    {
+      "best_rotation": [
+        0.4,
+        0.3,
+        0.5
+      ],
+      "grid": {
+        "nx": 30,
+        "ny": 7,
+        "nz": 5
+      },
+      "limiter": "geometry",
+      "max_units": 1050,
+      "sku": "A"
+    }
+  ],
+  "summary": {
+    "container_volume": 76.35141427199999,
+    "remaining_volume": 40.351414271999985,
+    "remaining_weight": 15700.0,
+    "total_allocated_units": 600,
+    "used_volume": 36.0,
+    "used_weight": 10800.0,
+    "volume_fill_rate": 0.4715040362153726,
+    "weight_fill_rate": 0.4075471698113208
+  }
+}

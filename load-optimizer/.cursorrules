@@ -1,0 +1,48 @@
+# Cursor Rules for Load Optimizer Project
+
+## Code Style
+- Use type hints for all function parameters and return values
+- Follow PEP 8 style guidelines
+- Use descriptive variable and function names
+- Add docstrings to all classes and functions
+- Keep functions focused and single-purpose
+
+## Project Structure
+- Main logic goes in `src/load_optimizer/`
+- Tests go in `tests/` directory
+- Data files go in `data/` directory
+- Use Pydantic models for data validation
+
+## Testing
+- Write unit tests for all major functions
+- Use pytest for testing
+- Aim for high test coverage
+
+## Documentation
+- Update README.md when adding new features
+- Include examples in docstrings
+- Document all public APIs
+
+## Dependencies
+- Keep dependencies minimal
+- Use type hints to reduce need for runtime checks
+- Prefer standard library when possible
+You are helping build a container load optimizer.
+
+Coding standards:
+- Python 3.11+
+- Prefer pure functions and type hints everywhere
+- Use pydantic for input validation schemas
+- Keep algorithms in src/load_optimizer/packing/
+- Keep geometry primitives in src/load_optimizer/geometry.py
+- Write tests for every heuristic and constraint
+
+Behavior:
+- Before coding, restate the goal and assumptions in 3 bullets.
+- When implementing a heuristic, also implement:
+  (1) a deterministic seed option,
+  (2) a quick benchmark function,
+  (3) a pytest file with at least 3 cases.
+- Never mix IO with core algorithm logic.
+
+

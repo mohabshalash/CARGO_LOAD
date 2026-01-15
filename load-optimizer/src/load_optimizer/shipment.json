@@ -1,0 +1,23 @@
+{
+  "container_preset": "40HC",
+  "container": { "max_payload": 26500 },
+  "boxes": [
+    {
+      "sku": "SKU_SMALL",
+      "dims_in": { "L": 16, "W": 12, "H": 10 },
+      "weight_kg": 6.0,
+      "quantity": 200
+    },
+    {
+      "sku": "SKU_MED",
+      "dims_in": { "L": 20, "W": 16, "H": 14 },
+      "weight_kg": 10.0,
+      "quantity": 120
+    }
+  ]
+}
+
+
+
+
+
