@@ -350,9 +350,14 @@ async def parse(request: dict[str, Any]) -> dict[str, Any]:
         if not text or not isinstance(text, str):
             raise HTTPException(status_code=400, detail="Missing or invalid 'text' field in request")
         
+        # Read OPENAI_API_KEY from environment
+        api_key = os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            raise HTTPException(status_code=500, detail="OPENAI_API_KEY not set on server")
+        
         # Initialize OpenAI client with httpx client for CA bundle and timeout
         http_client = httpx.Client(timeout=30.0, verify=certifi.where())
-        client = OpenAI(http_client=http_client)
+        client = OpenAI(api_key=api_key, http_client=http_client)
         
         # System instruction
         system_instruction = """You are a logistics parser. Parse free-text shipment descriptions into structured JSON.
@@ -455,7 +460,10 @@ Rules:
 
 # C) Add health check: GET /health
 @app.get("/health")
-async def health() -> dict[str, str]:
+async def health() -> dict[str, Any]:
     """Health check endpoint."""
-    return {"status": "ok"}
+    return {
+        "ok": True,
+        "has_openai_key": bool(os.getenv("OPENAI_API_KEY"))
+    }
 
