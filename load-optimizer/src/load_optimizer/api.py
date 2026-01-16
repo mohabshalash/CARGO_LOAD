@@ -12,7 +12,7 @@ from typing import Any
 
 import certifi
 import httpx
-from fastapi import FastAPI, HTTPException, Response
+from fastapi import FastAPI, HTTPException, Response, Query
 from fastapi.middleware.cors import CORSMiddleware
 from openai import OpenAI
 from openai import APIConnectionError, APITimeoutError, APIError
@@ -394,7 +394,93 @@ def validate_input(request: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
     return {}, missing_fields
 
 
-def format_output(plan: dict[str, Any]) -> dict[str, Any]:
+def extract_render_data(plan: dict[str, Any]) -> tuple[list[dict[str, Any]], dict[str, float]]:
+    """
+    Extract lightweight rendering data from plan.
+    
+    Returns:
+        (placements_render, container_render)
+        placements_render: List of lightweight placement dicts with id, x, y, z, L, W, H
+        container_render: Dict with L, W, H
+    """
+    from load_optimizer.models import Placement
+    
+    placements_render = []
+    container_render = {}
+    
+    # Extract container dimensions
+    container = plan.get("container", {})
+    if container:
+        container_render = {
+            "L": float(container.get("length", 0)),
+            "W": float(container.get("width", 0)),
+            "H": float(container.get("height", 0)),
+        }
+    
+    # Extract placements from plan if they exist
+    # Check if plan has placements (might be in plan.placements or plan.packing_result.placements)
+    placements = []
+    if "placements" in plan:
+        placements = plan["placements"]
+    elif "packing_result" in plan and hasattr(plan["packing_result"], "placements"):
+        placements = plan["packing_result"].placements
+    
+    # Convert Placement objects to lightweight dicts
+    for placement in placements:
+        if isinstance(placement, Placement):
+            # Extract rotation dimensions (L, W, H)
+            rotation = placement.rotation
+            if isinstance(rotation, (tuple, list)) and len(rotation) == 3:
+                L, W, H = float(rotation[0]), float(rotation[1]), float(rotation[2])
+            else:
+                # Fallback to box dimensions if rotation not available
+                L = W = H = 0.0
+            
+            placement_dict = {
+                "x": float(placement.x),
+                "y": float(placement.y),
+                "z": float(placement.z),
+                "L": L,
+                "W": W,
+                "H": H,
+            }
+            
+            # Add id if box_id exists
+            if hasattr(placement, "box_id") and placement.box_id:
+                placement_dict["id"] = str(placement.box_id)
+            
+            placements_render.append(placement_dict)
+        elif isinstance(placement, dict):
+            # Handle dict format
+            placement_dict = {
+                "x": float(placement.get("x", 0)),
+                "y": float(placement.get("y", 0)),
+                "z": float(placement.get("z", 0)),
+            }
+            
+            # Extract dimensions from rotation
+            rotation = placement.get("rotation")
+            if isinstance(rotation, (tuple, list)) and len(rotation) == 3:
+                placement_dict["L"] = float(rotation[0])
+                placement_dict["W"] = float(rotation[1])
+                placement_dict["H"] = float(rotation[2])
+            else:
+                # Fallback
+                placement_dict["L"] = float(placement.get("length", 0))
+                placement_dict["W"] = float(placement.get("width", 0))
+                placement_dict["H"] = float(placement.get("height", 0))
+            
+            # Add id if available
+            box_id = placement.get("box_id")
+            if box_id:
+                placement_dict["id"] = str(box_id)
+            
+            placements_render.append(placement_dict)
+    
+    return placements_render, container_render
+
+
+def format_output(plan: dict[str, Any], include_render: bool = False) -> dict[str, Any]:
     """
     Format plan output with guaranteed fields and user-friendly summary.
     """
@@ -451,12 +537,23 @@ def format_output(plan: dict[str, Any]) -> dict[str, Any]:
         "plan": plan,  # Keep full plan for backward compatibility
     }
     
+    # Add rendering data if requested
+    if include_render:
+        placements_render, container_render = extract_render_data(plan)
+        if placements_render:
+            response["placements_render"] = placements_render
+        if container_render:
+            response["container_render"] = container_render
+    
     return response
 
 
 # B) Add endpoint: POST /optimize
 @app.post("/optimize")
-async def optimize(request: dict[str, Any]) -> dict[str, Any]:
+async def optimize(
+    request: dict[str, Any],
+    render: int = Query(0, description="Include rendering data (1) or not (0)")
+) -> dict[str, Any]:
     """
     Optimize shipment and return plan.
     
@@ -499,8 +596,11 @@ async def optimize(request: dict[str, Any]) -> dict[str, Any]:
         with open(plan_path, "w", encoding="utf-8") as f:
             json.dump(plan, f, indent=2, sort_keys=True)
         
+        # Check if render is requested (query param or request body flag)
+        include_render = render == 1 or request.get("render") == 1
+        
         # Format output
-        response = format_output(plan)
+        response = format_output(plan, include_render=include_render)
         
         # Log one concise line
         logger.info(
