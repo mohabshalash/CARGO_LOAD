@@ -19,8 +19,6 @@ from openai import APIConnectionError, APITimeoutError, APIError
 from load_optimizer.models import Container, Box
 from load_optimizer.capacity import max_units_single_sku, allocate_mixed_skus_greedy
 from pydantic import BaseModel, Field
-
-
 # Pydantic models for /parse endpoint structured outputs
 class ParsedItem(BaseModel):
     """Parsed item from logistics text."""
@@ -136,27 +134,86 @@ def build_plan(shipment: dict[str, Any]) -> dict[str, Any]:
     # Compute mixed_allocations (use original items dict format)
     mixed_allocations_raw = allocate_mixed_skus_greedy(container, items)
     
-    # Map allocated to allocated_qty for summary calculation
+    # Calculate theoretical maximums and enforce hard caps
+    import math
+    container_volume = container.length * container.width * container.height
+    container_max_weight = container.max_payload if container.max_payload is not None else None
+    
+    # Build a map of items by SKU for lookup
+    items_by_sku = {}
+    for item in items:
+        if isinstance(item, dict):
+            sku = item.get("sku", item.get("id", "UNKNOWN"))
+            items_by_sku[sku] = item
+    
+    # Process allocations with theoretical maximums and hard caps
     mixed_allocations = []
+    total_requested_units = 0
+    total_allocated_units = 0
+    
     for alloc in mixed_allocations_raw:
+        sku = alloc["sku"]
+        unit_volume = alloc["unit_volume"]
+        unit_weight = alloc["unit_weight"]
+        
+        # Get requested quantity from original item
+        item = items_by_sku.get(sku, {})
+        requested_units = int(item.get("quantity", item.get("quantity_requested", 0)))
+        total_requested_units += requested_units
+        
+        # Calculate theoretical maximums
+        theoretical_max_by_volume = math.floor(container_volume / unit_volume) if unit_volume > 0 else 0
+        if container_max_weight is not None and unit_weight > 0:
+            theoretical_max_by_weight = math.floor(container_max_weight / unit_weight)
+        else:
+            theoretical_max_by_weight = float('inf')
+        
+        # Enforce hard cap: allocated_units <= min(requested, theoretical_max_by_volume, theoretical_max_by_weight)
+        allocated_units = alloc["allocated"]
+        max_allowed = min(
+            requested_units,
+            theoretical_max_by_volume,
+            theoretical_max_by_weight if theoretical_max_by_weight != float('inf') else requested_units
+        )
+        allocated_units = min(allocated_units, max_allowed)
+        total_allocated_units += allocated_units
+        
+        # Calculate unloaded units
+        unloaded_units = requested_units - allocated_units
+        
+        # Determine limiting_factor
+        if allocated_units == theoretical_max_by_volume and requested_units > allocated_units:
+            limiting_factor = "VOLUME"
+        elif allocated_units == theoretical_max_by_weight and requested_units > allocated_units:
+            limiting_factor = "WEIGHT"
+        elif allocated_units < min(theoretical_max_by_volume, theoretical_max_by_weight if theoretical_max_by_weight != float('inf') else theoretical_max_by_volume) and requested_units > allocated_units:
+            limiting_factor = "GEOMETRY/PLACEMENT"
+        else:
+            limiting_factor = "UNKNOWN"
+        
         mixed_allocations.append({
-            "sku": alloc["sku"],
-            "allocated_qty": alloc["allocated"],
-            "limiting_factor": alloc["limiting_factor"],
-            "unit_volume": alloc["unit_volume"],
-            "unit_weight": alloc["unit_weight"],
+            "sku": sku,
+            "allocated_qty": allocated_units,
+            "requested_units": requested_units,
+            "allocated_units": allocated_units,
+            "unloaded_units": unloaded_units,
+            "limiting_factor": limiting_factor,
+            "theoretical_max_by_volume": theoretical_max_by_volume,
+            "theoretical_max_by_weight": theoretical_max_by_weight if theoretical_max_by_weight != float('inf') else None,
+            "unit_volume": unit_volume,
+            "unit_weight": unit_weight,
         })
     
-    # Step 2: Compute summary from mixed_allocations
-    container_volume = container.length * container.width * container.height
-    used_volume = sum(a["allocated_qty"] * a["unit_volume"] for a in mixed_allocations)
-    volume_fill_rate = used_volume / container_volume if container_volume > 0 else 0.0
-    used_weight = sum(a["allocated_qty"] * a["unit_weight"] for a in mixed_allocations)
-    container_max_weight = container.max_payload if container.max_payload is not None else 0.0
-    weight_fill_rate = used_weight / container_max_weight if container_max_weight > 0 else 0.0
+    # Step 2: Compute summary from mixed_allocations (with capped allocated_units)
+    used_volume = sum(a["allocated_units"] * a["unit_volume"] for a in mixed_allocations)
+    volume_fill_rate = min(used_volume / container_volume, 1.0) if container_volume > 0 else 0.0
+    used_weight = sum(a["allocated_units"] * a["unit_weight"] for a in mixed_allocations)
+    if container_max_weight is not None and container_max_weight > 0:
+        weight_fill_rate = min(used_weight / container_max_weight, 1.0)
+    else:
+        weight_fill_rate = 0.0
     remaining_volume = container_volume - used_volume
-    remaining_weight = container_max_weight - used_weight if container.max_payload is not None else None
-    total_allocated_units = sum(a["allocated_qty"] for a in mixed_allocations)
+    remaining_weight = container_max_weight - used_weight if container_max_weight is not None else None
     
     # Step 3: Build plan dict
     plan = {
@@ -174,7 +231,9 @@ def build_plan(shipment: dict[str, Any]) -> dict[str, Any]:
             "weight_fill_rate": weight_fill_rate,
             "remaining_volume": remaining_volume,
             "remaining_weight": remaining_weight,
-            "total_allocated_units": total_allocated_units,
+            "requested_units": total_requested_units,
+            "allocated_units": total_allocated_units,
+            "unloaded_units": total_requested_units - total_allocated_units,
         },
         "single_sku_capacity": single_sku_capacity,
         "mixed_allocations": mixed_allocations,
