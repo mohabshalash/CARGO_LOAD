@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import time
 import traceback
@@ -11,10 +12,12 @@ from typing import Any
 
 import certifi
 import httpx
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 from openai import OpenAI
 from openai import APIConnectionError, APITimeoutError, APIError
+
+logger = logging.getLogger(__name__)
 
 from load_optimizer.models import Container, Box
 from load_optimizer.capacity import max_units_single_sku, allocate_mixed_skus_greedy
@@ -331,6 +334,126 @@ def normalize_payload(payload: dict[str, Any]) -> dict[str, Any]:
     return normalized
 
 
+def validate_input(request: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+    """
+    Validate input and return normalized shipment and list of missing fields.
+    
+    Returns:
+        (normalized_shipment, missing_fields)
+        If missing_fields is non-empty, return friendly error.
+    """
+    missing_fields = []
+    
+    # Extract shipment
+    if "shipment" in request:
+        shipment_data = request["shipment"]
+    else:
+        shipment_data = request
+    
+    # Check container
+    container_data = shipment_data.get("container", {})
+    if not container_data:
+        missing_fields.append("Container size (length, width, height)")
+    else:
+        container_type = container_data.get("type", "")
+        if not container_type:
+            # Check if explicit dimensions provided
+            if not all(k in container_data for k in ["length", "width", "height"]):
+                missing_fields.append("Container size (length, width, height)")
+    
+    # Check items
+    items = shipment_data.get("items", [])
+    if not items:
+        missing_fields.append("Items to optimize")
+    else:
+        for i, item in enumerate(items):
+            # Check dimensions
+            has_dims = any(
+                k in item for k in ["l", "length", "w", "width", "h", "height", 
+                                   "dims_cm", "dims_m", "dims_in"]
+            )
+            if not has_dims:
+                missing_fields.append(f"Item {i+1} dimensions")
+            
+            # Check quantity (optional but recommended)
+            has_qty = any(k in item for k in ["qty", "quantity"])
+            if not has_qty:
+                # Not required, but we'll note it
+                pass
+    
+    # Normalize if no critical missing fields
+    if not missing_fields:
+        try:
+            normalized = normalize_payload(request)
+            return normalized, []
+        except Exception:
+            # If normalization fails, treat as missing info
+            missing_fields.append("Item dimensions")
+            missing_fields.append("Quantity per item")
+    
+    return {}, missing_fields
+
+
+def format_output(plan: dict[str, Any]) -> dict[str, Any]:
+    """
+    Format plan output with guaranteed fields and user-friendly summary.
+    """
+    summary = plan.get("summary", {})
+    mixed_allocations = plan.get("mixed_allocations", [])
+    
+    # Calculate units
+    requested_units = summary.get("requested_units", 0)
+    allocated_units = summary.get("allocated_units", 0)
+    units_loaded = int(allocated_units)
+    units_unloaded = max(0, int(requested_units - allocated_units))
+    
+    # Get fill rates
+    volume_fill_rate = summary.get("volume_fill_rate", 0.0)
+    weight_fill_rate = summary.get("weight_fill_rate", None)
+    has_weight = plan.get("container", {}).get("max_weight") is not None
+    
+    volume_fill_pct = round(volume_fill_rate * 100.0, 1)
+    weight_fill_pct = round(weight_fill_rate * 100.0, 1) if weight_fill_rate is not None else None
+    
+    # Determine limiting factor
+    limiting_factor = "none"
+    limiting_reason = "All requested units were successfully loaded."
+    
+    if volume_fill_pct >= 99.5:  # ≈ 100%
+        limiting_factor = "volume"
+        limiting_reason = "Container volume was fully utilized."
+    elif has_weight and weight_fill_pct is not None and weight_fill_pct >= 99.5:
+        limiting_factor = "weight"
+        limiting_reason = "Container weight capacity was fully utilized."
+    elif units_unloaded > 0:
+        # Check if it's a count limit or dimensions
+        limiting_factor = "dimensions"
+        limiting_reason = "Some items could not fit due to their dimensions."
+    
+    # Build summary string
+    weight_line = f"⚖️ Weight Fill: {weight_fill_pct:.1f}%" if weight_fill_pct is not None else "⚖️ Weight Fill: N/A"
+    summary_text = f"""🚢 Optimization Complete
+📦 Volume Fill: {volume_fill_pct:.1f}%
+{weight_line}
+✅ Units Loaded: {units_loaded}
+❌ Units Unloaded: {units_unloaded}
+🔎 Limiting Factor: {limiting_factor} — {limiting_reason}"""
+    
+    # Build response with guaranteed fields
+    response = {
+        "metrics": {
+            "units_loaded": units_loaded,
+            "units_unloaded": units_unloaded,
+            "limiting_factor": limiting_factor,
+            "limiting_reason": limiting_reason,
+        },
+        "summary": summary_text,
+        "plan": plan,  # Keep full plan for backward compatibility
+    }
+    
+    return response
+
+
 # B) Add endpoint: POST /optimize
 @app.post("/optimize")
 async def optimize(request: dict[str, Any]) -> dict[str, Any]:
@@ -348,37 +471,50 @@ async def optimize(request: dict[str, Any]) -> dict[str, Any]:
         }
     
     Returns:
-        Plan dict with container, summary, single_sku_capacity, mixed_allocations
+        Response with metrics, summary, and plan
     """
     try:
-        # Task 2: DEBUG prints
-        print("DEBUG /optimize called")
-        print(f"DEBUG incoming payload keys: {list(request.keys())}")
+        # Validate input
+        normalized_shipment, missing_fields = validate_input(request)
         
-        # Task 3: Normalize incoming payload
-        normalized_shipment = normalize_payload(request)
-        print(f"DEBUG normalized shipment keys: {list(normalized_shipment.keys())}")
+        if missing_fields:
+            # Return friendly 422 error
+            error_response = {
+                "error": "MISSING_INFORMATION",
+                "summary": "⚠️ Missing information\nPlease enter the missing details to run the optimization.",
+                "details": missing_fields,
+            }
+            return Response(
+                content=json.dumps(error_response),
+                status_code=422,
+                media_type="application/json"
+            )
         
-        # Task 4: Build plan
+        # Build plan
         plan = build_plan(normalized_shipment)
         
-        # Task 4: Write plan.json using absolute path
-        import json
+        # Write plan.json using absolute path
         plan_path = Path(__file__).parent / "plan.json"
         plan_path.parent.mkdir(parents=True, exist_ok=True)
         with open(plan_path, "w", encoding="utf-8") as f:
             json.dump(plan, f, indent=2, sort_keys=True)
-        file_size = plan_path.stat().st_size
-        print(f"DEBUG plan.json written to: {plan_path}")
-        print(f"DEBUG plan.json file size: {file_size} bytes")
         
-        # Task 5: Return plan JSON
-        return plan
+        # Format output
+        response = format_output(plan)
         
+        # Log one concise line
+        logger.info(
+            f"loaded_units={response['metrics']['units_loaded']}, "
+            f"unloaded_units={response['metrics']['units_unloaded']}, "
+            f"limiting_factor={response['metrics']['limiting_factor']}"
+        )
+        
+        return response
+        
+    except HTTPException:
+        raise
     except Exception as e:
-        # Task 1: Error handling
-        print("ERROR in /optimize endpoint:")
-        traceback.print_exc()
+        logger.error(f"ERROR in /optimize endpoint: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
