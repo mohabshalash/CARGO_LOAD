@@ -7,11 +7,25 @@
   },
   "mixed_allocations": [
     {
-      "allocated_qty": 600,
+      "allocated_qty": 300,
+      "limiting_factor": "request",
+      "sku": "C",
+      "unit_volume": 0.027,
+      "unit_weight": 8.0
+    },
+    {
+      "allocated_qty": 200,
       "limiting_factor": "request",
       "sku": "A",
       "unit_volume": 0.06,
-      "unit_weight": 18.0
+      "unit_weight": 20.0
+    },
+    {
+      "allocated_qty": 600,
+      "limiting_factor": "request",
+      "sku": "B",
+      "unit_volume": 0.08399999999999999,
+      "unit_weight": 10.0
     }
   ],
   "single_sku_capacity": [
@@ -29,16 +43,46 @@
       "limiter": "geometry",
       "max_units": 1050,
       "sku": "A"
+    },
+    {
+      "best_rotation": [
+        0.3,
+        0.7,
+        0.4
+      ],
+      "grid": {
+        "nx": 40,
+        "ny": 3,
+        "nz": 6
+      },
+      "limiter": "geometry",
+      "max_units": 720,
+      "sku": "B"
+    },
+    {
+      "best_rotation": [
+        0.3,
+        0.3,
+        0.3
+      ],
+      "grid": {
+        "nx": 40,
+        "ny": 7,
+        "nz": 8
+      },
+      "limiter": "geometry",
+      "max_units": 2240,
+      "sku": "C"
     }
   ],
   "summary": {
     "container_volume": 76.35141427199999,
-    "remaining_volume": 40.351414271999985,
-    "remaining_weight": 15700.0,
-    "total_allocated_units": 600,
-    "used_volume": 36.0,
-    "used_weight": 10800.0,
-    "volume_fill_rate": 0.4715040362153726,
-    "weight_fill_rate": 0.4075471698113208
+    "remaining_volume": 5.8514142719999995,
+    "remaining_weight": 14100.0,
+    "total_allocated_units": 1100,
+    "used_volume": 70.49999999999999,
+    "used_weight": 12400.0,
+    "volume_fill_rate": 0.9233620709217712,
+    "weight_fill_rate": 0.4679245283018868
   }
 }
