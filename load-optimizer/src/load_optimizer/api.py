@@ -400,7 +400,7 @@ def extract_render_data(plan: dict[str, Any]) -> tuple[list[dict[str, Any]], dic
     
     Returns:
         (placements_render, container_render)
-        placements_render: List of lightweight placement dicts with id, x, y, z, L, W, H
+        placements_render: List of lightweight placement dicts with x, y, z, dims
         container_render: Dict with L, W, H
     """
     from load_optimizer.models import Placement
@@ -418,63 +418,56 @@ def extract_render_data(plan: dict[str, Any]) -> tuple[list[dict[str, Any]], dic
         }
     
     # Extract placements from plan if they exist
-    # Check if plan has placements (might be in plan.placements or plan.packing_result.placements)
+    # Check multiple possible locations for placements
     placements = []
     if "placements" in plan:
         placements = plan["placements"]
-    elif "packing_result" in plan and hasattr(plan["packing_result"], "placements"):
-        placements = plan["packing_result"].placements
+    elif "packing_result" in plan:
+        packing_result = plan["packing_result"]
+        if hasattr(packing_result, "placements"):
+            placements = packing_result.placements
+        elif isinstance(packing_result, dict) and "placements" in packing_result:
+            placements = packing_result["placements"]
     
     # Convert Placement objects to lightweight dicts
     for placement in placements:
+        # Extract dimensions: prefer rotation tuple, fallback to length/width/height
+        dims = [0.0, 0.0, 0.0]
+        
         if isinstance(placement, Placement):
             # Extract rotation dimensions (L, W, H)
             rotation = placement.rotation
             if isinstance(rotation, (tuple, list)) and len(rotation) == 3:
-                L, W, H = float(rotation[0]), float(rotation[1]), float(rotation[2])
-            else:
-                # Fallback to box dimensions if rotation not available
-                L = W = H = 0.0
+                dims = [float(rotation[0]), float(rotation[1]), float(rotation[2])]
+            elif hasattr(placement, "length") and hasattr(placement, "width") and hasattr(placement, "height"):
+                dims = [float(placement.length), float(placement.width), float(placement.height)]
             
             placement_dict = {
                 "x": float(placement.x),
                 "y": float(placement.y),
                 "z": float(placement.z),
-                "L": L,
-                "W": W,
-                "H": H,
+                "dims": dims,
             }
-            
-            # Add id if box_id exists
-            if hasattr(placement, "box_id") and placement.box_id:
-                placement_dict["id"] = str(placement.box_id)
-            
             placements_render.append(placement_dict)
         elif isinstance(placement, dict):
             # Handle dict format
+            rotation = placement.get("rotation")
+            if isinstance(rotation, (tuple, list)) and len(rotation) == 3:
+                dims = [float(rotation[0]), float(rotation[1]), float(rotation[2])]
+            else:
+                # Fallback to length/width/height
+                dims = [
+                    float(placement.get("length", placement.get("L", 0))),
+                    float(placement.get("width", placement.get("W", 0))),
+                    float(placement.get("height", placement.get("H", 0))),
+                ]
+            
             placement_dict = {
                 "x": float(placement.get("x", 0)),
                 "y": float(placement.get("y", 0)),
                 "z": float(placement.get("z", 0)),
+                "dims": dims,
             }
-            
-            # Extract dimensions from rotation
-            rotation = placement.get("rotation")
-            if isinstance(rotation, (tuple, list)) and len(rotation) == 3:
-                placement_dict["L"] = float(rotation[0])
-                placement_dict["W"] = float(rotation[1])
-                placement_dict["H"] = float(rotation[2])
-            else:
-                # Fallback
-                placement_dict["L"] = float(placement.get("length", 0))
-                placement_dict["W"] = float(placement.get("width", 0))
-                placement_dict["H"] = float(placement.get("height", 0))
-            
-            # Add id if available
-            box_id = placement.get("box_id")
-            if box_id:
-                placement_dict["id"] = str(box_id)
-            
             placements_render.append(placement_dict)
     
     return placements_render, container_render
@@ -540,8 +533,8 @@ def format_output(plan: dict[str, Any], include_render: bool = False) -> dict[st
     # Add rendering data if requested
     if include_render:
         placements_render, container_render = extract_render_data(plan)
-        if placements_render:
-            response["placements_render"] = placements_render
+        # Always include placements_render when render=1 (empty [] if no placements)
+        response["placements_render"] = placements_render
         if container_render:
             response["container_render"] = container_render
     
