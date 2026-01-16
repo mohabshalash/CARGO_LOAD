@@ -279,6 +279,10 @@ def build_plan(shipment: dict[str, Any]) -> dict[str, Any]:
     from load_optimizer.packing.first_fit import pack_boxes
     packing_result = pack_boxes(container, boxes_for_packing)
     
+    # Never store Placement objects in response dicts (not JSON serializable).
+    # Keep raw placements ONLY in a local variable.
+    raw_placements = packing_result.placements
+    
     # Step 4: Build plan dict (DO NOT include raw Placement objects - they're not JSON serializable)
     plan = {
         "container": {
@@ -303,11 +307,7 @@ def build_plan(shipment: dict[str, Any]) -> dict[str, Any]:
         "mixed_allocations": mixed_allocations,
     }
     
-    # Store placements separately for rendering extraction (not in plan dict to avoid JSON serialization)
-    # We'll remove this before returning plan to avoid JSON issues
-    plan["_packing_result_placements"] = packing_result.placements
-    
-    return plan
+    return plan, raw_placements
 
 
 def normalize_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -459,6 +459,63 @@ def validate_input(request: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
     return {}, missing_fields
 
 
+def build_placements_render(raw_placements: list) -> list[dict[str, Any]]:
+    """
+    Build placements_render from raw Placement objects (JSON primitives only).
+    
+    Args:
+        raw_placements: List of Placement objects
+        
+    Returns:
+        List of dicts with x, y, z, dims (all JSON-serializable primitives)
+    """
+    from load_optimizer.models import Placement
+    
+    placements_render = []
+    
+    for placement in raw_placements:
+        # Extract dimensions: prefer rotation tuple, fallback to length/width/height
+        dims = [0.0, 0.0, 0.0]
+        
+        if isinstance(placement, Placement):
+            # Extract rotation dimensions (L, W, H)
+            rotation = placement.rotation
+            if isinstance(rotation, (tuple, list)) and len(rotation) == 3:
+                dims = [float(rotation[0]), float(rotation[1]), float(rotation[2])]
+            elif hasattr(placement, "length") and hasattr(placement, "width") and hasattr(placement, "height"):
+                dims = [float(placement.length), float(placement.width), float(placement.height)]
+            
+            placement_dict = {
+                "x": float(placement.x),
+                "y": float(placement.y),
+                "z": float(placement.z),
+                "dims": dims,
+            }
+            placements_render.append(placement_dict)
+        elif isinstance(placement, dict):
+            # Handle dict format
+            rotation = placement.get("rotation")
+            if isinstance(rotation, (tuple, list)) and len(rotation) == 3:
+                dims = [float(rotation[0]), float(rotation[1]), float(rotation[2])]
+            else:
+                # Fallback to length/width/height
+                dims = [
+                    float(placement.get("length", placement.get("L", 0))),
+                    float(placement.get("width", placement.get("W", 0))),
+                    float(placement.get("height", placement.get("H", 0))),
+                ]
+            
+            placement_dict = {
+                "x": float(placement.get("x", 0)),
+                "y": float(placement.get("y", 0)),
+                "z": float(placement.get("z", 0)),
+                "dims": dims,
+            }
+            placements_render.append(placement_dict)
+    
+    return placements_render
+
+
 def extract_render_data(plan: dict[str, Any]) -> tuple[list[dict[str, Any]], dict[str, float]]:
     """
     Extract lightweight rendering data from plan.
@@ -549,7 +606,7 @@ def extract_render_data(plan: dict[str, Any]) -> tuple[list[dict[str, Any]], dic
     return placements_render, container_render
 
 
-def format_output(plan: dict[str, Any], include_render: bool = False) -> dict[str, Any]:
+def format_output(plan: dict[str, Any], include_render: bool = False, raw_placements: list | None = None) -> dict[str, Any]:
     """
     Format plan output with guaranteed fields and user-friendly summary.
     """
@@ -594,17 +651,6 @@ def format_output(plan: dict[str, Any], include_render: bool = False) -> dict[st
 ❌ Units Unloaded: {units_unloaded}
 🔎 Limiting Factor: {limiting_factor} — {limiting_reason}"""
     
-    # Remove temporary placements key from plan before including in response (to avoid JSON serialization errors)
-    # Extract placements first if needed for rendering
-    placements_render = []
-    container_render = {}
-    if include_render:
-        placements_render, container_render = extract_render_data(plan)
-    
-    # Remove temporary key from plan before JSON serialization
-    if "_packing_result_placements" in plan:
-        del plan["_packing_result_placements"]
-    
     # Build response with guaranteed fields
     response = {
         "metrics": {
@@ -614,11 +660,24 @@ def format_output(plan: dict[str, Any], include_render: bool = False) -> dict[st
             "limiting_reason": limiting_reason,
         },
         "summary": summary_text,
-        "plan": plan,  # Keep full plan for backward compatibility (now safe - no Placement objects)
+        "plan": plan,  # Keep full plan for backward compatibility (no Placement objects)
     }
     
     # Add rendering data if requested
     if include_render:
+        # Build placements_render from raw_placements (never store Placement objects in response dicts)
+        placements_render = build_placements_render(raw_placements) if raw_placements else []
+        
+        # Get container_render from plan
+        container_render = {}
+        container = plan.get("container", {})
+        if container:
+            container_render = {
+                "L": float(container.get("length", 0)),
+                "W": float(container.get("width", 0)),
+                "H": float(container.get("height", 0)),
+            }
+        
         # Always include placements_render when render=1 (empty [] if no placements)
         response["placements_render"] = placements_render
         # Add debug placements_count
@@ -669,7 +728,8 @@ async def optimize(
             )
         
         # Build plan
-        plan = build_plan(normalized_shipment)
+        # Never store Placement objects in response dicts (not JSON serializable).
+        plan, raw_placements = build_plan(normalized_shipment)
         
         # Write plan.json using absolute path
         plan_path = Path(__file__).parent / "plan.json"
@@ -681,7 +741,7 @@ async def optimize(
         include_render = render == 1 or request.get("render") == 1
         
         # Format output
-        response = format_output(plan, include_render=include_render)
+        response = format_output(plan, include_render=include_render, raw_placements=raw_placements if include_render else None)
         
         # Log one concise line
         logger.info(
