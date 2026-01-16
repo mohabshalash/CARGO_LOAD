@@ -218,7 +218,68 @@ def build_plan(shipment: dict[str, Any]) -> dict[str, Any]:
     remaining_volume = container_volume - used_volume
     remaining_weight = container_max_weight - used_weight if container_max_weight is not None else None
     
-    # Step 3: Build plan dict
+    # Step 3: Generate actual placements by calling pack_boxes with allocated quantities
+    boxes_for_packing = []
+    for alloc in mixed_allocations:
+        sku = alloc["sku"]
+        allocated_qty = alloc["allocated_units"]
+        
+        # Find the Box template for this SKU
+        box_template = None
+        for item_box in items_for_capacity:
+            if item_box.id == sku or (sku in item_box.id and item_box.id.startswith(sku)):
+                box_template = item_box
+                break
+        
+        if box_template is None:
+            # Fallback: try to find in items_by_sku and create Box
+            item = items_by_sku.get(sku, {})
+            if item:
+                # Use the same conversion logic as above
+                length_m, width_m, height_m = None, None, None
+                if "dims_m" in item:
+                    dims = item["dims_m"]
+                    length_m = float(dims.get("L", dims.get("length", 0)))
+                    width_m = float(dims.get("W", dims.get("width", 0)))
+                    height_m = float(dims.get("H", dims.get("height", 0)))
+                elif "dims_cm" in item:
+                    dims = item["dims_cm"]
+                    length_m = float(dims.get("L", dims.get("length", 0))) / 100.0
+                    width_m = float(dims.get("W", dims.get("width", 0))) / 100.0
+                    height_m = float(dims.get("H", dims.get("height", 0))) / 100.0
+                elif "dims_in" in item:
+                    dims = item["dims_in"]
+                    length_m = float(dims.get("L", dims.get("length", 0))) * 0.0254
+                    width_m = float(dims.get("W", dims.get("width", 0))) * 0.0254
+                    height_m = float(dims.get("H", dims.get("height", 0))) * 0.0254
+                
+                if length_m and width_m and height_m:
+                    weight_kg = float(item.get("weight_kg", item.get("weight", 0.0)))
+                    box_template = Box(
+                        id=sku,
+                        length=length_m,
+                        width=width_m,
+                        height=height_m,
+                        weight=weight_kg if weight_kg > 0 else None,
+                    )
+        
+        # Generate boxes for packing
+        if box_template:
+            for i in range(allocated_qty):
+                box = Box(
+                    id=f"{sku}_{i:04d}",
+                    length=box_template.length,
+                    width=box_template.width,
+                    height=box_template.height,
+                    weight=box_template.weight,
+                )
+                boxes_for_packing.append(box)
+    
+    # Call pack_boxes to get actual placements
+    from load_optimizer.packing.first_fit import pack_boxes
+    packing_result = pack_boxes(container, boxes_for_packing)
+    
+    # Step 4: Build plan dict
     plan = {
         "container": {
             "length": container.length,
@@ -240,6 +301,7 @@ def build_plan(shipment: dict[str, Any]) -> dict[str, Any]:
         },
         "single_sku_capacity": single_sku_capacity,
         "mixed_allocations": mixed_allocations,
+        "placements": packing_result.placements,  # Store actual placements
     }
     
     return plan
@@ -535,6 +597,8 @@ def format_output(plan: dict[str, Any], include_render: bool = False) -> dict[st
         placements_render, container_render = extract_render_data(plan)
         # Always include placements_render when render=1 (empty [] if no placements)
         response["placements_render"] = placements_render
+        # Add debug placements_count
+        response["placements_count"] = len(placements_render)
         if container_render:
             response["container_render"] = container_render
     
