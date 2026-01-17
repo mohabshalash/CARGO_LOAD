@@ -2,87 +2,50 @@
   "container": {
     "height": 2.698,
     "length": 12.032,
-    "max_weight": 26500.0,
+    "max_weight": null,
     "width": 2.352
   },
   "mixed_allocations": [
     {
-      "allocated_qty": 300,
-      "limiting_factor": "request",
-      "sku": "C",
-      "unit_volume": 0.027,
-      "unit_weight": 8.0
-    },
-    {
-      "allocated_qty": 200,
-      "limiting_factor": "request",
+      "allocated_qty": 10,
+      "allocated_units": 10,
+      "limiting_factor": "UNKNOWN",
+      "requested_units": 10,
       "sku": "A",
-      "unit_volume": 0.06,
-      "unit_weight": 20.0
-    },
-    {
-      "allocated_qty": 600,
-      "limiting_factor": "request",
-      "sku": "B",
-      "unit_volume": 0.08399999999999999,
-      "unit_weight": 10.0
+      "theoretical_max_by_volume": 1272523571,
+      "theoretical_max_by_weight": null,
+      "unit_volume": 6.000000000000001e-08,
+      "unit_weight": 0.05,
+      "unloaded_units": 0
     }
   ],
   "single_sku_capacity": [
     {
       "best_rotation": [
-        0.4,
-        0.3,
-        0.5
+        0.005,
+        0.004,
+        0.003
       ],
       "grid": {
-        "nx": 30,
-        "ny": 7,
-        "nz": 5
+        "nx": 2406,
+        "ny": 588,
+        "nz": 899
       },
       "limiter": "geometry",
-      "max_units": 1050,
+      "max_units": 1271840472,
       "sku": "A"
-    },
-    {
-      "best_rotation": [
-        0.3,
-        0.7,
-        0.4
-      ],
-      "grid": {
-        "nx": 40,
-        "ny": 3,
-        "nz": 6
-      },
-      "limiter": "geometry",
-      "max_units": 720,
-      "sku": "B"
-    },
-    {
-      "best_rotation": [
-        0.3,
-        0.3,
-        0.3
-      ],
-      "grid": {
-        "nx": 40,
-        "ny": 7,
-        "nz": 8
-      },
-      "limiter": "geometry",
-      "max_units": 2240,
-      "sku": "C"
     }
   ],
   "summary": {
+    "allocated_units": 10,
     "container_volume": 76.35141427199999,
-    "remaining_volume": 5.8514142719999995,
-    "remaining_weight": 14100.0,
-    "total_allocated_units": 1100,
-    "used_volume": 70.49999999999999,
-    "used_weight": 12400.0,
-    "volume_fill_rate": 0.9233620709217712,
-    "weight_fill_rate": 0.4679245283018868
+    "remaining_volume": 76.35141367199998,
+    "remaining_weight": null,
+    "requested_units": 10,
+    "unloaded_units": 0,
+    "used_volume": 6.000000000000001e-07,
+    "used_weight": 0.5,
+    "volume_fill_rate": 7.858400603589546e-09,
+    "weight_fill_rate": 0.0
   }
 }

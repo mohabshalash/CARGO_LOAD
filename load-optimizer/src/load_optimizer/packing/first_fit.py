@@ -64,7 +64,8 @@ def generate_candidate_points(placements: list[Placement], boxes_by_id: dict[str
         points.add((x, y + W, z))
         points.add((x, y, z + H))
 
-    return sorted(points, key=lambda t: (t[2], t[1], t[0]))
+    # Sort by (y, z, x) to enforce floor-first placement: all y=0 candidates before y>0
+    return sorted(points, key=lambda t: (t[1], t[2], t[0]))
 
 
 def compute_fill_rate(container: Container, placements: list[Placement], boxes_by_id: dict[str, Box]) -> float:
