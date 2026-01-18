@@ -54,7 +54,7 @@ app = FastAPI()
 # A) Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://platform.interconnect360.com"],  # Temporarily allow all origins (replace with Wix domain later)
+    allow_origins=["https://www.interconnect360.com"],  # Temporarily allow all origins (replace with Wix domain later)
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
