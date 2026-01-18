@@ -21,6 +21,7 @@ logger = logging.getLogger(__name__)
 
 from load_optimizer.models import Container, Box
 from load_optimizer.capacity import max_units_single_sku, allocate_mixed_skus_greedy
+from load_optimizer.brokeragent import agent_conversation, calculate_quote, calculate_savings
 from pydantic import BaseModel, Field
 # Pydantic models for /parse endpoint structured outputs
 class ParsedItem(BaseModel):
@@ -49,27 +50,35 @@ class ParseResponse(BaseModel):
     shipment: ParsedShipment = Field(description="Shipment information")
 
 
-app = FastAPI()
+# FastAPI app instance (exactly one)
+app = FastAPI(
+    title="Load Optimizer API",
+    description="Container load optimization service",
+)
 
-# CORS middleware: Allow interconnect360.com and www.interconnect360.com (with optional port :443)
+# CORS middleware applied immediately after app creation
+# Allows www.interconnect360.com and interconnect360.com (both with optional port :443)
 app.add_middleware(
     CORSMiddleware,
-    allow_origin_regex=r"^https://(www\.)?interconnect360\.com(?::443)?$",
+    allow_origin_regex=r"^https://(www\.)?interconnect360\.com(?::\d+)?$",
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
     expose_headers=["*"],
+    max_age=3600,
 )
 
 
 @app.get("/_deploy_check")
 async def deploy_check(request: Request):
-    """Debug endpoint to check received Origin header."""
+    """Debug endpoint to verify deployment and CORS configuration."""
     return {
+        "app": "load-optimizer-api",
         "origin": request.headers.get("origin"),
         "host": request.headers.get("host"),
         "x_forwarded_host": request.headers.get("x-forwarded-host"),
         "x_forwarded_proto": request.headers.get("x-forwarded-proto"),
+        "method": request.method,
     }
 
 def build_plan(shipment: dict[str, Any]) -> dict[str, Any]:
@@ -903,6 +912,138 @@ Rules:
         if len(error_detail) > 300:
             error_detail = error_detail[:297] + "..."
         raise HTTPException(status_code=500, detail=error_detail)
+
+
+# BrokerAgent endpoints
+@app.post("/agent")
+async def agent(request: dict[str, Any]) -> dict[str, Any]:
+    """
+    BrokerAgent conversational endpoint for collecting shipment data.
+    
+    Input (request body):
+        {
+            "session_id": "unique-session-id",
+            "message": "I need to ship 100 cartons from New York to London"
+        }
+    
+    Returns:
+        {
+            "assistant_message": "Natural language response",
+            "draft_json": {...},
+            "missing_fields": [...],
+            "ready_for_quote": bool,
+            "ready_for_optimize": bool,
+            "ready_for_savings": bool,
+        }
+    """
+    try:
+        session_id = request.get("session_id")
+        message = request.get("message", "")
+        
+        if not session_id:
+            raise HTTPException(status_code=400, detail="session_id is required")
+        if not message or not isinstance(message, str):
+            raise HTTPException(status_code=400, detail="message must be a non-empty string")
+        
+        result = await agent_conversation(session_id, message)
+        return result
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Agent endpoint error: {repr(e)}", exc_info=True)
+        error_detail = str(e)[:300] if str(e) else "Unknown error"
+        raise HTTPException(status_code=500, detail=f"Agent endpoint failed: {error_detail}")
+
+
+@app.post("/quote")
+async def quote(request: dict[str, Any]) -> dict[str, Any]:
+    """
+    Calculate baseline quote based on draft_json.
+    
+    Input (request body):
+        {
+            "draft_json": {
+                "origin_country": "USA",
+                "origin_city": "New York",
+                "destination_country": "UK",
+                "destination_city": "London",
+                "container_type": "40HC",
+                "quantity": 100,
+                "unit_weight": 18.0,
+                "unit_weight_unit": "kg",
+                "unit_length": 50.0,
+                "unit_width": 40.0,
+                "unit_height": 30.0,
+                "unit_dimension_unit": "cm",
+                "product_type": "cartons"
+            }
+        }
+    
+    Returns:
+        {
+            "total_usd": float,
+            "per_unit_usd": float,
+            "breakdown": [{"label": str, "usd": float}]
+        }
+    """
+    try:
+        draft_json = request.get("draft_json")
+        if not draft_json or not isinstance(draft_json, dict):
+            raise HTTPException(status_code=400, detail="draft_json is required and must be a dict")
+        
+        result = calculate_quote(draft_json)
+        return result
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Quote endpoint error: {repr(e)}", exc_info=True)
+        error_detail = str(e)[:300] if str(e) else "Unknown error"
+        raise HTTPException(status_code=500, detail=f"Quote calculation failed: {error_detail}")
+
+
+@app.post("/savings")
+async def savings(request: dict[str, Any]) -> dict[str, Any]:
+    """
+    Calculate CargoPool savings based on optimize_result.
+    
+    Input (request body):
+        {
+            "draft_json": {...},
+            "quote_result": {"total_usd": 3800.0, "per_unit_usd": 38.0, ...},
+            "optimize_result": {"metrics": {"volume_fill_rate": 0.75, "weight_fill_rate": 0.60}, ...}
+        }
+    
+    Returns:
+        {
+            "savings_pct": float,
+            "baseline_per_unit": float,
+            "pooled_per_unit": float,
+            "explanation": str
+        }
+    """
+    try:
+        draft_json = request.get("draft_json")
+        quote_result = request.get("quote_result")
+        optimize_result = request.get("optimize_result")
+        
+        if not draft_json or not isinstance(draft_json, dict):
+            raise HTTPException(status_code=400, detail="draft_json is required and must be a dict")
+        if not quote_result or not isinstance(quote_result, dict):
+            raise HTTPException(status_code=400, detail="quote_result is required and must be a dict")
+        if not optimize_result or not isinstance(optimize_result, dict):
+            raise HTTPException(status_code=400, detail="optimize_result is required and must be a dict")
+        
+        result = calculate_savings(draft_json, quote_result, optimize_result)
+        return result
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Savings endpoint error: {repr(e)}", exc_info=True)
+        error_detail = str(e)[:300] if str(e) else "Unknown error"
+        raise HTTPException(status_code=500, detail=f"Savings calculation failed: {error_detail}")
 
 
 # C) Add health check: GET /health
