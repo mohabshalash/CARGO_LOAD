@@ -51,23 +51,25 @@ class ParseResponse(BaseModel):
 
 app = FastAPI()
 
-# A) Add CORS middleware
-
+# CORS middleware: Allow interconnect360.com and www.interconnect360.com (with optional port :443)
 app.add_middleware(
     CORSMiddleware,
-    allow_origin_regex=r"^https://(www\.)?interconnect360\.com$",
+    allow_origin_regex=r"^https://(www\.)?interconnect360\.com(?::443)?$",
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
+    expose_headers=["*"],
 )
-@app.get("/_debug_origin")
-async def debug_origin(request: Request):
+
+
+@app.get("/_deploy_check")
+async def deploy_check(request: Request):
+    """Debug endpoint to check received Origin header."""
     return {
         "origin": request.headers.get("origin"),
         "host": request.headers.get("host"),
         "x_forwarded_host": request.headers.get("x-forwarded-host"),
         "x_forwarded_proto": request.headers.get("x-forwarded-proto"),
-        "referer": request.headers.get("referer"),
     }
 
 def build_plan(shipment: dict[str, Any]) -> dict[str, Any]:
