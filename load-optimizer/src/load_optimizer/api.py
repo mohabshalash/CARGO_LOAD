@@ -16,7 +16,7 @@ from fastapi import FastAPI, HTTPException, Response, Query
 from fastapi.middleware.cors import CORSMiddleware
 from openai import OpenAI
 from openai import APIConnectionError, APITimeoutError, APIError
-
+from fastapi import Request
 logger = logging.getLogger(__name__)
 
 from load_optimizer.models import Container, Box
@@ -52,14 +52,23 @@ class ParseResponse(BaseModel):
 app = FastAPI()
 
 # A) Add CORS middleware
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://www.interconnect360.com"],  # Temporarily allow all origins (replace with Wix domain later)
+    allow_origin_regex=r"^https://(www\.)?interconnect360\.com$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
+@app.get("/_debug_origin")
+async def debug_origin(request: Request):
+    return {
+        "origin": request.headers.get("origin"),
+        "host": request.headers.get("host"),
+        "x_forwarded_host": request.headers.get("x-forwarded-host"),
+        "x_forwarded_proto": request.headers.get("x-forwarded-proto"),
+        "referer": request.headers.get("referer"),
+    }
 
 def build_plan(shipment: dict[str, Any]) -> dict[str, Any]:
     """
