@@ -1055,3 +1055,22 @@ async def health() -> dict[str, Any]:
         "has_openai_key": bool(os.getenv("OPENAI_API_KEY"))
     }
 
+
+@app.get("/health/db")
+async def health_db() -> dict[str, Any]:
+    """Check DB connectivity via connection pool (SELECT 1)."""
+    from load_optimizer.db import get_conn, put_conn
+    conn = None
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("SELECT 1")
+        cur.close()
+        return {"db": "ok"}
+    except Exception as e:
+        logger.warning(f"Health DB check failed: {e}")
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    finally:
+        if conn is not None:
+            put_conn(conn)
+
