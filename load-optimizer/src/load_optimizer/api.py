@@ -7,6 +7,7 @@ import logging
 import os
 import time
 import traceback
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -919,16 +920,25 @@ Rules:
 async def agent(request: dict[str, Any]) -> dict[str, Any]:
     """
     BrokerAgent conversational endpoint for collecting shipment data.
-    
+    Uses DB-backed session memory (sessions, messages, session_state).
+
+    Session handling:
+    - If request includes session_id, reuse it (do not generate a new one).
+    - If missing, generate a UUID session_id exactly once and return it.
+    - Upsert into sessions (insert if missing; update last_active_at if exists).
+    - Insert user message and assistant message into messages with the same session_id.
+    - Always return JSON containing session_id and assistant_message.
+
     Input (request body):
         {
-            "session_id": "unique-session-id",
+            "session_id": "optional-unique-session-id",
             "message": "I need to ship 100 cartons from New York to London"
         }
-    
+
     Returns:
         {
-            "assistant_message": "Natural language response",
+            "session_id": str,
+            "assistant_message": str,
             "draft_json": {...},
             "missing_fields": [...],
             "ready_for_quote": bool,
@@ -936,18 +946,112 @@ async def agent(request: dict[str, Any]) -> dict[str, Any]:
             "ready_for_savings": bool,
         }
     """
+    from load_optimizer.db import get_conn, put_conn
+
     try:
+        # Reuse provided session_id; generate exactly once if missing
         session_id = request.get("session_id")
+        if not session_id or not isinstance(session_id, str) or not session_id.strip():
+            session_id = str(uuid.uuid4())
+
         message = request.get("message", "")
-        
-        if not session_id:
-            raise HTTPException(status_code=400, detail="session_id is required")
         if not message or not isinstance(message, str):
             raise HTTPException(status_code=400, detail="message must be a non-empty string")
-        
-        result = await agent_conversation(session_id, message)
-        return result
-        
+
+        conn = None
+        try:
+            conn = get_conn()
+            cur = conn.cursor()
+
+            # Upsert sessions: insert if missing, update last_active_at if exists
+            cur.execute(
+                """
+                INSERT INTO sessions (session_id, last_active_at)
+                VALUES (%s, now())
+                ON CONFLICT (session_id) DO UPDATE SET last_active_at = now()
+                """,
+                (session_id,),
+            )
+            # Insert user message (same session_id)
+            cur.execute(
+                "INSERT INTO messages (session_id, role, content) VALUES (%s, 'user', %s)",
+                (session_id, message),
+            )
+
+            # Load last 20 messages (chronological: DESC LIMIT 20 then reverse)
+            cur.execute(
+                """
+                SELECT role, content
+                FROM messages
+                WHERE session_id = %s
+                ORDER BY created_at DESC
+                LIMIT 20
+                """,
+                (session_id,),
+            )
+            rows = cur.fetchall()
+            recent_messages = [{"role": r[0], "content": r[1] or ""} for r in reversed(rows)]
+
+            # Load all session_state for this session
+            cur.execute(
+                "SELECT key, value FROM session_state WHERE session_id = %s",
+                (session_id,),
+            )
+            session_state_rows = cur.fetchall()
+            session_state = {}
+            for k, v in session_state_rows:
+                session_state[k] = v if isinstance(v, dict) else (json.loads(v) if isinstance(v, str) else v)
+
+            cur.close()
+            put_conn(conn)
+            conn = None
+        finally:
+            if conn is not None:
+                put_conn(conn)
+
+        result = await agent_conversation(session_id, message, recent_messages, session_state)
+
+        # Persist assistant message and updated draft; commit and return connection to pool in finally
+        conn = None
+        try:
+            conn = get_conn()
+            cur = conn.cursor()
+            cur.execute(
+                "INSERT INTO messages (session_id, role, content) VALUES (%s, 'assistant', %s)",
+                (session_id, result["assistant_message"]),
+            )
+            draft = result.get("draft_json") or {}
+            cur.execute(
+                """
+                INSERT INTO session_state (session_id, key, value, updated_at)
+                VALUES (%s, 'draft', %s::jsonb, now())
+                ON CONFLICT (session_id, key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()
+                """,
+                (session_id, json.dumps(draft) if isinstance(draft, dict) else draft),
+            )
+            cur.execute(
+                "UPDATE sessions SET last_active_at = now() WHERE session_id = %s",
+                (session_id,),
+            )
+            conn.commit()
+            cur.close()
+            put_conn(conn)
+            conn = None
+        finally:
+            if conn is not None:
+                put_conn(conn)
+
+        # Always return JSON with session_id and assistant_message
+        return {
+            "session_id": session_id,
+            "assistant_message": result["assistant_message"],
+            "draft_json": result.get("draft_json"),
+            "missing_fields": result.get("missing_fields", []),
+            "ready_for_quote": result.get("ready_for_quote"),
+            "ready_for_optimize": result.get("ready_for_optimize"),
+            "ready_for_savings": result.get("ready_for_savings"),
+        }
+
     except HTTPException:
         raise
     except Exception as e:
@@ -1044,6 +1148,77 @@ async def savings(request: dict[str, Any]) -> dict[str, Any]:
         logger.error(f"Savings endpoint error: {repr(e)}", exc_info=True)
         error_detail = str(e)[:300] if str(e) else "Unknown error"
         raise HTTPException(status_code=500, detail=f"Savings calculation failed: {error_detail}")
+
+
+@app.get("/debug/session/{session_id}")
+async def debug_session(session_id: str) -> dict[str, Any]:
+    """Return session row, last 20 messages, and all session_state for testing."""
+    from load_optimizer.db import get_conn, put_conn
+
+    conn = None
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+
+        cur.execute(
+            "SELECT id, session_id, user_id, created_at, last_active_at, metadata FROM sessions WHERE session_id = %s",
+            (session_id,),
+        )
+        row = cur.fetchone()
+        session_row = None
+        if row:
+            session_row = {
+                "id": row[0],
+                "session_id": row[1],
+                "user_id": row[2],
+                "created_at": str(row[3]) if row[3] else None,
+                "last_active_at": str(row[4]) if row[4] else None,
+                "metadata": row[5],
+            }
+
+        cur.execute(
+            """
+            SELECT role, content, created_at
+            FROM messages
+            WHERE session_id = %s
+            ORDER BY created_at DESC
+            LIMIT 20
+            """,
+            (session_id,),
+        )
+        msg_rows = cur.fetchall()
+        last_20_messages = [
+            {"role": r[0], "content": r[1], "created_at": str(r[2]) if r[2] else None}
+            for r in reversed(msg_rows)
+        ]
+
+        cur.execute(
+            "SELECT key, value, updated_at FROM session_state WHERE session_id = %s",
+            (session_id,),
+        )
+        state_rows = cur.fetchall()
+        session_state = {}
+        for r in state_rows:
+            val = r[1]
+            if isinstance(val, str):
+                try:
+                    val = json.loads(val)
+                except Exception:
+                    pass
+            session_state[r[0]] = {"value": val, "updated_at": str(r[2]) if r[2] else None}
+
+        cur.close()
+        put_conn(conn)
+        return {
+            "session": session_row,
+            "last_20_messages": last_20_messages,
+            "session_state": session_state,
+        }
+    except Exception as e:
+        if conn is not None:
+            put_conn(conn)
+        logger.warning(f"Debug session failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # C) Add health check: GET /health

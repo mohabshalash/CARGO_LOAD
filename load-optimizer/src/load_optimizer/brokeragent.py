@@ -145,10 +145,31 @@ def get_missing_fields_for_readiness(draft: dict[str, Any], target: str) -> list
     return missing
 
 
-async def agent_conversation(session_id: str, message: str) -> dict[str, Any]:
+def _session_state_context_bullets(session_state: dict[str, Any]) -> str:
+    """Summarize session_state dict as bullet points for system context."""
+    if not session_state:
+        return "(no session state yet)"
+    lines = []
+    for k, v in session_state.items():
+        if isinstance(v, dict):
+            lines.append(f"- {k}: {json.dumps(v)}")
+        else:
+            lines.append(f"- {k}: {v}")
+    return "\n".join(lines) if lines else "(empty)"
+
+
+async def agent_conversation(
+    session_id: str,
+    message: str,
+    recent_messages: list[dict[str, str]],
+    session_state: dict[str, Any],
+) -> dict[str, Any]:
     """
-    Handle BrokerAgent conversation turn.
-    
+    Handle BrokerAgent conversation turn using DB-backed context.
+
+    recent_messages: last N messages from DB (list of {role, content}), already including current user message.
+    session_state: key/value from session_state table (e.g. draft, ...).
+
     Returns:
         {
             "assistant_message": str,
@@ -159,20 +180,11 @@ async def agent_conversation(session_id: str, message: str) -> dict[str, Any]:
             "ready_for_savings": bool,
         }
     """
-    # Get or create session
-    if session_id not in _session_store:
-        _session_store[session_id] = {
-            "draft": {},
-            "conversation_history": [],
-        }
-    
-    session = _session_store[session_id]
-    draft = session["draft"]
-    conversation_history = session["conversation_history"]
-    
-    # Add user message to history
-    conversation_history.append({"role": "user", "content": message})
-    
+    draft = session_state.get("draft")
+    if not isinstance(draft, dict):
+        draft = {}
+    conversation_history = recent_messages
+
     # Read OPENAI_API_KEY
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
@@ -186,7 +198,11 @@ async def agent_conversation(session_id: str, message: str) -> dict[str, Any]:
     missing_fields = get_missing_fields_for_readiness(draft, "savings")  # Check for highest level
     readiness = calculate_readiness(draft)
     
+    state_bullets = _session_state_context_bullets(session_state)
     system_instruction = f"""You are a logistics broker agent helping collect shipment information.
+
+Session state (from DB):
+{state_bullets}
 
 Current draft data: {json.dumps(draft, indent=2)}
 
@@ -217,12 +233,11 @@ Valid fields:
 
 Extract information from user messages and respond naturally. Ask follow-up questions to collect missing data."""
     
-    # Build conversation context
+    # Build LLM input: system + last 20 messages (already from DB, chronological)
     input_messages = [
         {"role": "system", "content": system_instruction}
     ]
-    # Add last 10 messages for context (avoid token bloat)
-    input_messages.extend(conversation_history[-10:])
+    input_messages.extend(conversation_history)
     
     try:
         # First: Extract structured data using structured output
@@ -300,13 +315,7 @@ Extract information from user messages and respond naturally. Ask follow-up ques
             if questions:
                 assistant_message = f"{assistant_message}\n\nI still need a few more details:\n" + "\n".join(f"- {q}" for q in questions)
         
-        # Update conversation history
-        conversation_history.append({"role": "assistant", "content": assistant_message})
-        
-        # Update session
-        session["draft"] = draft
-        session["conversation_history"] = conversation_history
-        
+        # Session and messages are persisted by the API layer (DB)
         return {
             "assistant_message": assistant_message,
             "draft_json": draft,
